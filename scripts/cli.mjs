@@ -10,7 +10,7 @@ if (!fs.existsSync(path.join(dist, 'dxf2jww.js'))) { console.error('dist/ があ
 const { convertDxfToJww } = await import(path.join(dist, 'dxf2jww.js'));
 
 const args = process.argv.slice(2);
-const opt = { jww: false, dxf: false, paper: 3, scale: undefined, hatch: 'lines', out: null, info: false, inputs: [] };
+const opt = { jww: false, dxf: false, paper: 3, scale: undefined, hatch: 'lines', units: 'auto', out: null, info: false, inputs: [] };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--jww') opt.jww = true;
@@ -20,11 +20,13 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--out') opt.out = args[++i];
   else if (a === '--info') opt.info = true;
   else if (a === '--hatch') opt.hatch = String(args[++i]);
+  else if (a === '--units') opt.units = String(args[++i]);
   else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
   else opt.inputs.push(a);
 }
 if (!opt.jww && !opt.dxf) opt.jww = true;
 if (!['lines', 'outline', 'none'].includes(opt.hatch)) { console.error('--hatch は lines / outline / none で指定してください'); process.exit(1); }
+if (!['auto', 'mm', 'cm', 'm', 'inch'].includes(opt.units)) { console.error('--units は auto / mm / cm / m / inch で指定してください'); process.exit(1); }
 if (opt.paper < 0) { console.error('--paper は A0〜A4 で指定してください'); process.exit(1); }
 if (!opt.inputs.length) { usage(); process.exit(1); }
 function usage() {
@@ -32,6 +34,7 @@ function usage() {
   --jww     JWWを出力（既定）      --dxf    DWGからDXFを出力
   --paper   JWWの用紙（既定 A3）   --scale  JWWの縮尺の分母（省略時は自動）
   --hatch   ハッチング模様: lines（線にする・既定） / outline（外形線だけ） / none（入れない）
+  --units   図面の単位: auto（既定・mm/cm/m 以外は mm） / mm / cm / m / inch
   --out     出力先フォルダ（省略時は元ファイルの隣）
   --info    変換情報（縮尺・原点など）を .info.json に書き出す（検証用）`);
 }
@@ -67,13 +70,14 @@ for (const f of files) {
     const done = [];
     if (opt.dxf && isDwg) { fs.writeFileSync(base.replace(/\.dwg$/i, '.dxf'), dxf); done.push('DXF'); }
     if (opt.jww || !isDwg) {
-      const { jww, info } = convertDxfToJww(dxf, { paper: opt.paper, scale: opt.scale, hatch: opt.hatch });
+      const { jww, info } = convertDxfToJww(dxf, { paper: opt.paper, scale: opt.scale, hatch: opt.hatch, units: opt.units });
       fs.writeFileSync(base.replace(/\.(dwg|dxf)$/i, '.jww'), jww);
       if (opt.info) fs.writeFileSync(base.replace(/\.(dwg|dxf)$/i, '.info.json'), JSON.stringify(info, null, 1));
       if (opt.info && isDwg && !opt.dxf) fs.writeFileSync(base.replace(/\.dwg$/i, '.dxf'), dxf);
       done.push(`JWW 1/${info.scale}`);
       for (const w of info.warnings) console.log('  注意:', w);
       const sk = Object.entries(info.skipped); if (sk.length) console.log('  変換しなかったもの:', sk.map(([k, v]) => `${k}×${v}`).join(', '));
+      if (info.missingBlocks.length) console.log('  読めなかったブロック:', info.missingBlocks.join(', '));
     }
     console.log(`${f.rel} → ${done.join(' + ')} (${Date.now() - t0} ms)`);
   } catch (e) { failed++; console.error(`${f.rel}: 失敗 - ${e.message}`); }

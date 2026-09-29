@@ -135,6 +135,15 @@ tr:last-child td { border-bottom: 0; }
         <option value="500">1/500</option><option value="600">1/600</option><option value="1000">1/1000</option><option value="2500">1/2500</option>
       </select>
     </label>
+    <label class="field" for="units">
+      <span>図面の単位</span>
+      <select id="units">
+        <option value="auto" selected>自動（mm・cm・m 以外は mm）</option>
+        <option value="mm">mm</option>
+        <option value="m">m</option>
+        <option value="inch">インチ</option>
+      </select>
+    </label>
     <label class="field" for="hatch">
       <span>ハッチング模様</span>
       <select id="hatch">
@@ -317,8 +326,9 @@ tr:last-child td { border-bottom: 0; }
     if (h.dense) parts.push(`細かいハッチング${h.dense}個は外形線`);
     if (h.outlined) parts.push(`ハッチング${h.outlined}個を外形線に`);
     if (h.skipped) parts.push(`ハッチング${h.skipped}個を省略`);
+    const mb = info.missingBlocks || [];
     const sk = Object.entries(info.skipped || {});
-    if (sk.length) parts.push('変換しなかったもの：' + sk.map(([k, v]) => `${k}×${v}`).join('、'));
+    if (sk.length) parts.push('変換しなかったもの：' + sk.map(([k, v]) => `${k}×${v}`).join('、') + (mb.length ? `（読めなかったブロック：${mb.join('、')}）` : ''));
     return parts.join(' ／ ');
   }
 
@@ -326,7 +336,7 @@ tr:last-child td { border-bottom: 0; }
   $('btnStart').addEventListener('click', async () => {
     running = true; refresh(); say('');
     const want = { jww: $('outJww').checked, dxf: $('outDxf').checked };
-    const opts = { paper: +$('paper').value, scale: +$('scale').value || undefined, hatch: $('hatch').value };
+    const opts = { paper: +$('paper').value, scale: +$('scale').value || undefined, hatch: $('hatch').value, units: $('units').value };
     for (const it of items) {
       if (it.status !== 'wait') continue;
       it.status = 'run'; updateRow(it); refresh();

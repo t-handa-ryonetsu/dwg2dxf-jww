@@ -188,12 +188,21 @@ class LineStore {
 export function convertDxfToJww(u8, opts = {}) {
   const dec = decodeDxf(u8); const { ver, enc } = dec;
   const dxf = parseDxf(dec.text);
-  const stats = { byType: {}, skipped: {}, warnings: [], hatchLines: 0, hatchDense: 0, hatchOutlined: 0, hatchSkipped: 0 };
+  const stats = { byType: {}, skipped: {}, warnings: [], hatchLines: 0, hatchDense: 0, hatchOutlined: 0, hatchSkipped: 0, dimRedrawn: 0, missingBlocks: new Set() };
   const skip = (t) => { stats.skipped[t] = (stats.skipped[t] || 0) + 1; };
 
   // units → mm
   const ins = parseInt(dxf.header.$INSUNITS?.[70] ?? '0', 10);
-  const unitMM = { 1: 25.4, 2: 304.8, 4: 1, 5: 10, 6: 1000, 7: 1e6, 8: 0.0000254, 9: 0.0254, 10: 914.4, 14: 100, 15: 10000 }[ins] || 1;
+  const UNIT_MM = { 1: 25.4, 2: 304.8, 4: 1, 5: 10, 6: 1000, 7: 1e6, 8: 0.0000254, 9: 0.0254, 10: 914.4, 14: 100, 15: 10000 };
+  const UNIT_NAME = { 1: 'インチ', 2: 'フィート', 7: 'km', 8: 'マイクロインチ', 9: 'ミル', 10: 'ヤード', 14: 'デシメートル', 15: 'デカメートル' };
+  const FORCED = { mm: 1, cm: 10, m: 1000, inch: 25.4 };
+  let unitMM;
+  if (FORCED[opts.units]) unitMM = FORCED[opts.units];
+  else if (ins === 4 || ins === 5 || ins === 6) unitMM = UNIT_MM[ins];
+  else {
+    unitMM = 1; // unitless or imperial label: treat as mm (common for drawings made from AutoCAD's default template)
+    if (UNIT_NAME[ins]) stats.warnings.push(`図面の単位が「${UNIT_NAME[ins]}」になっていますが、mm として扱いました（「図面の単位」の設定で変えられます）`);
+  }
 
   // layers
   const layerOrder = []; const layerIdx = new Map();
@@ -291,10 +300,13 @@ export function convertDxfToJww(u8, opts = {}) {
   const warnOnce = new Set();
   function warn(msg) { if (!warnOnce.has(msg)) { warnOnce.add(msg); stats.warnings.push(msg); } }
 
+  const sources = {}; // elements produced, by source entity type (inner entities of blocks counted separately)
   function explode(list, m, ctx, depth) {
     if (depth > 20) { warn('ブロックの入れ子が深すぎるため一部を省略しました'); return; }
     for (const e of list) {
+      const before = lines.n + prims.length;
       try { conv(e, m, ctx, depth); } catch (err) { skip(e.type + '（読み取りエラー）'); }
+      if (e.type !== 'INSERT' && e.type !== 'DIMENSION' && e.type !== 'ACAD_TABLE') sources[e.type] = (sources[e.type] || 0) + lines.n + prims.length - before;
       if (truncated) return;
     }
   }
@@ -360,7 +372,7 @@ export function convertDxfToJww(u8, opts = {}) {
         return;
       }
       case 'SPLINE': {
-        const pts = splinePoints(e);
+        const pts = simplify(splinePoints(e));
         for (let i = 0; i + 1 < pts.length; i++) line(M, a, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
         return;
       }
@@ -407,7 +419,7 @@ export function convertDxfToJww(u8, opts = {}) {
       }
       case 'INSERT': case 'ACAD_TABLE': {
         const b = dxf.blocks.get(gv(e, 2));
-        if (!b) { skip('ブロック（定義なし）'); return; }
+        if (!b) { skip('ブロック（定義なし）'); stats.missingBlocks.add(decodeEscapes(gv(e, 2) || '')); return; }
         const sx = gn(e, 41, 1), sy = gn(e, 42, 1), rot = gn(e, 50) * Math.PI / 180;
         const cols = Math.max(1, gn(e, 70, 1)), rows = Math.max(1, gn(e, 71, 1)), cs = gn(e, 44), rs = gn(e, 45);
         const c = Math.cos(rot), s = Math.sin(rot);
@@ -424,7 +436,7 @@ export function convertDxfToJww(u8, opts = {}) {
       }
       case 'DIMENSION': case 'ARC_DIMENSION': case 'LARGE_RADIAL_DIMENSION': {
         const b = dxf.blocks.get(gv(e, 2));
-        if (!b) { skip('寸法（図形なし）'); return; }
+        if (!b) { if (!redrawDimension(e, M, a)) skip('寸法（図形なし）'); return; }
         const bctx = { layer: a.layerName, color: a.color, style: a.style, rgb: a.rgb };
         return explode(b.entities, M, bctx, depth + 1);
       }
@@ -463,6 +475,30 @@ export function convertDxfToJww(u8, opts = {}) {
       case 'VIEWPORT': case 'ATTRIB_': case 'SEQEND': case 'XLINE': case 'RAY': return;
       default: skip(t);
     }
+  }
+
+  // Linear (rotated) and aligned dimensions drawn from 13/23, 14/24 (extension origins), 10/20 (dimension line)
+  function redrawDimension(e, M, a) {
+    const type = gn(e, 70) & 7;
+    if (type !== 0 && type !== 1) return false;
+    const x1 = gn(e, 13), y1 = gn(e, 23), x2 = gn(e, 14), y2 = gn(e, 24), dx = gn(e, 10), dy = gn(e, 20);
+    let ang = type === 1 ? Math.atan2(y2 - y1, x2 - x1) : gn(e, 50) * Math.PI / 180;
+    const ux = Math.cos(ang), uy = Math.sin(ang);
+    const proj = (x, y) => { const t = (x - dx) * ux + (y - dy) * uy; return [dx + ux * t, dy + uy * t]; };
+    const p1 = proj(x1, y1), p2 = proj(x2, y2);
+    if (![...p1, ...p2].every(Number.isFinite)) return false;
+    line(M, a, x1, y1, p1[0], p1[1]); line(M, a, x2, y2, p2[0], p2[1]); line(M, a, p1[0], p1[1], p2[0], p2[1]);
+    const meas = gv(e, 42) !== undefined ? gn(e, 42) : Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    const over = gv(e, 1) || '';
+    const value = (Math.round(meas * 100) / 100).toLocaleString('ja-JP');
+    const str = over === '' || over === '<>' ? value : over.replace('<>', value);
+    const hdr = dxf.header;
+    const h = (parseFloat(hdr.$DIMTXT?.[40]) || 2.5) * (parseFloat(hdr.$DIMSCALE?.[40]) || 1);
+    const tx = gv(e, 11) !== undefined ? gn(e, 11) : (p1[0] + p2[0]) / 2, ty = gv(e, 21) !== undefined ? gn(e, 21) : (p1[1] + p2[1]) / 2;
+    let deg = ang * 180 / Math.PI; if (deg > 90.001 || deg <= -90) deg += 180;
+    text(M, a, tx, ty, h, 1, deg, mtextLines(str).join(' '), 1, 2);
+    stats.dimRedrawn++;
+    return true;
   }
 
   // ---- HATCH
@@ -623,6 +659,7 @@ export function convertDxfToJww(u8, opts = {}) {
 
   // ---- run
   explode(dxf.entities, I, {}, 0);
+  if (stats.dimRedrawn) warn(`図形データが読めなかった寸法${stats.dimRedrawn}個は、寸法の位置と値から描き直しました`);
   if (stats.hatchDense) warn(`細かいハッチング模様${stats.hatchDense}個は、線が多くなりすぎるため外形線だけにしました`);
   if (truncated) warn(`図形が${(MAX_TOTAL / 10000).toFixed(0)}万個を超えたため、それ以降を省きました。ハッチングの設定を「外形線だけ」か「入れない」にすると減らせます`);
 
@@ -716,7 +753,36 @@ export function convertDxfToJww(u8, opts = {}) {
   }
   if (nl > 256) warn(`画層が${nl}個あり、Jw_cadの上限（256）を超えた分は最後のレイヤにまとめました`);
   const jww = writeJww(h, jwwEntities(), total);
-  return { jww, info: { scale, paper, unit: ins, enc, ver, layers: nl, counts, skipped: stats.skipped, warnings: stats.warnings, byType: stats.byType, hatch: { lines: stats.hatchLines, dense: stats.hatchDense, outlined: stats.hatchOutlined, skipped: stats.hatchSkipped }, extentMM: [wmm, hmm], origin: [cx, cy], unitMM } };
+  return { jww, info: { scale, paper, unit: ins, enc, ver, layers: nl, counts, skipped: stats.skipped, warnings: stats.warnings, byType: stats.byType, missingBlocks: [...stats.missingBlocks], sources, hatch: { lines: stats.hatchLines, dense: stats.hatchDense, outlined: stats.hatchOutlined, skipped: stats.hatchSkipped }, extentMM: [wmm, hmm], origin: [cx, cy], unitMM } };
+}
+
+// ---------------------------------------------------------------- curve simplification
+// Douglas–Peucker: keep the fewest points whose polyline stays within tol of the dense sampling.
+// tol defaults to 0.1% of the curve's bounding-box diagonal (e.g. 1 mm on a 1 m bend).
+function simplify(pts, tol) {
+  if (pts.length <= 3) return pts;
+  if (tol === undefined) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of pts) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    tol = Math.hypot(x1 - x0, y1 - y0) * 0.001;
+    if (!(tol > 0)) return [pts[0], pts[pts.length - 1]];
+  }
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const [ax, ay] = pts[a], [bx, by] = pts[b], dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+    let worst = -1, wi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = pts[i];
+      let d;
+      if (L2 === 0) d = Math.hypot(px - ax, py - ay);
+      else { const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2)); d = Math.hypot(ax + dx * t - px, ay + dy * t - py); }
+      if (d > worst) { worst = d; wi = i; }
+    }
+    if (worst > tol) { keep[wi] = 1; stack.push([a, wi], [wi, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
 }
 
 // ---------------------------------------------------------------- splines

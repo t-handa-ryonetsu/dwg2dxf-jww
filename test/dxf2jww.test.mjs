@@ -88,3 +88,36 @@ test('millions of lines are converted without truncation', () => {
   assert.equal(info.warnings.length, 0);
   assert.equal(new DataView(jww.buffer).getUint16(jww.length - 2, true), 0); // block list count at the end
 });
+
+// minimal DXF writer for tests
+const dxfOf = (header, body) => new TextEncoder().encode(`0\nSECTION\n2\nHEADER\n${header}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${body}0\nENDSEC\n0\nEOF\n`);
+const lineEnt = (x1, y1, x2, y2) => `0\nLINE\n8\n0\n10\n${x1}\n20\n${y1}\n11\n${x2}\n21\n${y2}\n`;
+
+test('units: an inch label is read as mm (with a warning) unless inch is chosen', () => {
+  const d = dxfOf('9\n$INSUNITS\n70\n1\n', lineEnt(0, 0, 10000, 0) + lineEnt(0, 0, 0, 7000));
+  const a = convertDxfToJww(d, { paper: 3 });
+  assert.equal(a.info.scale, 30); // 10 m × 7 m on A3
+  assert.ok(a.info.warnings.some((w) => /インチ/.test(w)));
+  const b = convertDxfToJww(d, { paper: 3, units: 'inch' });
+  assert.equal(b.info.scale, 750); // 254 m × 178 m on A3
+  const m = convertDxfToJww(dxfOf('9\n$INSUNITS\n70\n6\n', lineEnt(0, 0, 10, 0) + lineEnt(0, 0, 0, 7)), { paper: 3 });
+  assert.equal(m.info.scale, 30); // metres
+});
+
+test('a linear dimension without its graphics block is redrawn', () => {
+  const dim = '0\nDIMENSION\n8\nDIM\n2\n*D99\n10\n0\n20\n-500\n11\n2500\n21\n-500\n70\n32\n42\n5000\n1\n\n13\n0\n23\n0\n14\n5000\n24\n0\n50\n0\n';
+  const { jww, info } = convertDxfToJww(dxfOf('', lineEnt(0, 0, 5000, 0) + dim), { paper: 3 });
+  const doc = readJww(jww);
+  assert.deepEqual(info.skipped, {});
+  assert.ok(doc.entities.some((e) => e.t === 'moji' && sjis.decode(e.text) === '5,000'));
+  assert.equal(doc.entities.filter((e) => e.t === 'sen').length, 1 + 3);
+});
+
+test('splines are thinned to the points the shape needs', () => {
+  // a fit-point spline shaped like a gentle S across 10 m
+  const pts = Array.from({ length: 40 }, (_, i) => [i * 250, Math.sin(i / 6) * 800]);
+  const sp = '0\nSPLINE\n8\n0\n70\n8\n71\n3\n74\n' + pts.length + '\n' + pts.map(([x, y]) => `11\n${x}\n21\n${y}\n`).join('');
+  const { info } = convertDxfToJww(dxfOf('', sp), { paper: 3 });
+  assert.ok(info.counts.線 < 200, 'lines: ' + info.counts.線); // was 1280 before thinning
+  assert.ok(info.counts.線 > 10);
+});
