@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Test data that is not stored in this repository
+      - name: Download sample drawings
+        run: |
+          mkdir -p test/fixtures/external
+          for f in example_2000 example_2018; do
+            curl -sSfL -o test/fixtures/external/$f.dwg \
+              https://raw.githubusercontent.com/LibreDWG/libredwg/master/test/test-data/$f.dwg
+          done
+          git clone --depth 1 https://github.com/neka-nat/ezjww.git /tmp/ezjww
+
+      - name: Unit tests (incl. byte-for-byte round trip of real Jw_cad files)
+        run: npm test
+        env:
+          JWW_SAMPLES_DIR: /tmp/ezjww/jww_samples
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Geometry check against ezdxf / ezjww
+        run: |
+          pip install -r tools/requirements.txt
+          node scripts/cli.mjs --info --out out test/fixtures
+          python tools/verify_geometry.py out
