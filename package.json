@@ -1,0 +1,42 @@
+{
+  "name": "dwg2dxf-jww",
+  "version": "1.0.0",
+  "description": "DWG・DXFをブラウザ内でDXF・JWW（Jw_cad）に一括変換するツール / In-browser batch converter from DWG and DXF to DXF and JWW (Jw_cad)",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "dwg",
+    "dxf",
+    "jww",
+    "jw_cad",
+    "cad",
+    "converter",
+    "libredwg",
+    "wasm"
+  ],
+  "bin": {
+    "dwg2dxf-jww": "scripts/cli.mjs"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && node scripts/serve.mjs",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "convert": "npm run build --silent && node scripts/cli.mjs",
+    "docs": "node scripts/build.mjs --docs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@mlightcad/libredwg-web": "0.7.14",
+    "earcut": "3.2.4"
+  }
+}

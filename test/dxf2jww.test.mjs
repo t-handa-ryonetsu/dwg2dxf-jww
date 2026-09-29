@@ -58,3 +58,33 @@ test('binary DXF is rejected with a clear message', () => {
   const bin = new TextEncoder().encode('AutoCAD Binary DXF\r\n\x1a\x00' + '\x00'.repeat(20));
   assert.throws(() => convertDxfToJww(bin), /バイナリ/);
 });
+
+test('very fine hatch becomes its outline; normal hatches stay as pattern lines', () => {
+  const { info, doc } = convert('r2018_dense_hatch.dxf');
+  assert.equal(info.hatch.dense, 1);
+  assert.ok(info.hatch.lines > 20 && info.counts.点 > 1000, 'normal hatches still produce pattern lines and dots');
+  assert.ok(!info.warnings.some((w) => /離れた/.test(w)), 'dense hatch dots do not look like stray objects');
+  assert.ok(info.warnings.some((w) => /外形線/.test(w)));
+  assert.ok(!info.warnings.some((w) => /省きました/.test(w)), 'nothing truncated');
+  assert.ok(doc.entities.length < 60000);
+});
+
+test('hatch option: outline only / none', () => {
+  const o = convert('r2018_dense_hatch.dxf', { paper: 3, hatch: 'outline' });
+  assert.equal(o.info.hatch.outlined, 3);
+  assert.equal(o.info.counts.線, 1 + 3 * 4); // wall line + 3 rectangles
+  const n = convert('r2018_dense_hatch.dxf', { paper: 3, hatch: 'none' });
+  assert.equal(n.info.hatch.skipped, 3);
+  assert.equal(n.info.counts.線, 1);
+});
+
+test('millions of lines are converted without truncation', () => {
+  // 2,000,000 LINE entities in one DXF
+  const N = 2000000, parts = ['0\nSECTION\n2\nENTITIES\n'];
+  for (let i = 0; i < N; i++) parts.push(`0\nLINE\n8\n0\n10\n${i % 1000}\n20\n${(i / 1000) | 0}\n11\n${(i % 1000) + 0.5}\n21\n${(i / 1000) | 0}\n`);
+  parts.push('0\nENDSEC\n0\nEOF\n');
+  const { info, jww } = convertDxfToJww(new TextEncoder().encode(parts.join('')), { paper: 3 });
+  assert.equal(info.counts.線, N);
+  assert.equal(info.warnings.length, 0);
+  assert.equal(new DataView(jww.buffer).getUint16(jww.length - 2, true), 0); // block list count at the end
+});

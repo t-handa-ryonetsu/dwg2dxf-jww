@@ -42,6 +42,10 @@ def reference_points(dxf_path):
             segs += [(v[i].x, v[i].y, v[(i + 1) % 4].x, v[(i + 1) % 4].y) for i in range(4)]
             continue
         if t == 'HATCH':
+            # the boundary is valid reference too: dense or 'outline' hatches are drawn as their outline
+            for bp in ezpath.from_hatch(e):
+                fl = [(v.x, v.y) for v in bp.flattening(0.01, segments=16)]
+                segs += [(a[0], a[1], b[0], b[1]) for a, b in zip(fl, fl[1:])]
             if not e.dxf.solid_fill:
                 try:
                     for a, b in hatching.hatch_entity(e): segs.append((a.x, a.y, b.x, b.y))
@@ -53,7 +57,8 @@ def reference_points(dxf_path):
         segs += [(a[0], a[1], b[0], b[1]) for a, b in zip(fl, fl[1:])]
     S = np.array(segs)
     ext = max(np.ptp(S[:, [0, 2]]), np.ptp(S[:, [1, 3]]))
-    step = ext / 20000
+    total_len = float(np.hypot(S[:, 2] - S[:, 0], S[:, 3] - S[:, 1]).sum())
+    step = max(ext / 20000, total_len / 4e6)  # at most ~4 million reference points
     pts = [np.c_[ax + (bx - ax) * t, ay + (by - ay) * t]
            for ax, ay, bx, by in segs
            for t in [np.linspace(0, 1, max(1, int(math.hypot(bx - ax, by - ay) / step)) + 1)]]
