@@ -1,0 +1,4 @@
+ezdxf>=1.3
+ezjww>=0.3
+numpy
+scipy
